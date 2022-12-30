@@ -1,0 +1,33 @@
+version: '3.5'
+
+services:
+  postgres:
+    container_name: postgres
+    image: postgres
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+      PGDATA: /data/postgres
+    volumes:
+       - ./data/postgres:/data/postgres
+       - ./init/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "${DB_PORT}:${DB_PORT}"
+    restart: unless-stopped
+
+  redis:
+    container_name: redis
+    image: redis:6.2-alpine
+    restart: unless-stopped
+    command: redis-server --save 20 1 --loglevel warning --requirepass ${CACHE_PASSWORD}
+    ports:
+      - "${CACHE_PORT}:${CACHE_PORT}"
+    volumes:
+      - "./data/redis:/data"
+
+volumes:
+  postgres:
+    driver: local
+  redis:
+    driver: local
