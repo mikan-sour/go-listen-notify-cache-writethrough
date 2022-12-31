@@ -25,6 +25,25 @@ services:
       - "${CACHE_PORT}:${CACHE_PORT}"
     volumes:
       - "./data/redis:/data"
+  
+  blackbox:
+    container_name: blackbox-test
+    build:
+      context: .
+    depends_on:
+      - redis
+      - postgres
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=postgres
+      - DB_PASSWORD=postgres
+      - DB_USERNAME=postgres
+      - CACHE_HOST=redis
+      - CACHE_PORT=6379
+      - CACHE_PASSWORD=redis-password
+      - E2E=1
+
 
 volumes:
   postgres:

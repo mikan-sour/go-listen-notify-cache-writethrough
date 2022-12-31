@@ -2,7 +2,6 @@ package listener
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"sync"
@@ -49,73 +48,13 @@ func TestMain(m *testing.M) {
 
 }
 
-func TestE2e(t *testing.T) {
-	ctx := context.Background()
-	lstnr := New(cfg, context.Background())
-
-	go lstnr.Start(1)
-
-	dns := cfg.Dns()
-	db, err := sql.Open("postgres", dns)
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = db.QueryContext(ctx, "insert into records (created_date) values($1) returning id;", time.Now())
-	if err != nil {
-		t.Fatalf("expected no err but got %s", err.Error())
-	}
-
-	cache := lstnr.GetCache()
-
-	cache.Set(ctx, key, value, 0)
-
-	res := cache.Get(ctx, key)
-
-	if res.Val() != value {
-		t.Fatalf("expected %s but got %s", value, res.Val())
-	}
-
-}
-
-func TestE2eWaitSeconds(t *testing.T) {
-	ctx := context.Background()
-	lstnr := New(cfg, context.Background())
-
-	go lstnr.Start(1)
-
-	dns := cfg.Dns()
-	db, err := sql.Open("postgres", dns)
-	if err != nil {
-		panic(err)
-	}
-
-	_, err = db.QueryContext(ctx, "insert into records (created_date) values($1) returning id;", time.Now())
-	if err != nil {
-		t.Fatalf("expected no err but got %s", err.Error())
-	}
-
-	time.Sleep(2 * time.Second)
-
-	cache := lstnr.GetCache()
-
-	cache.Set(ctx, key, value, 0)
-
-	res := cache.Get(ctx, key)
-
-	if res.Val() != value {
-		t.Fatalf("expected %s but got %s", value, res.Val())
-	}
-
-}
-
 func TestDBCloseErrorCase(t *testing.T) {
 	l := ListenerImpl{
 		ctx: context.Background(),
 	}
 	db, _ := redismock.NewClientMock()
 
-	l.Cache = &iredis{Client: db}
+	l.Cache = &IRedisImpl{Client: db}
 
 	l.ListenerConn = MockListenerImpl{
 		MockClose: func() error {
@@ -137,7 +76,7 @@ func TestDBCloseSuccessCase(t *testing.T) {
 	db, mock := redismock.NewClientMock()
 	mock.ExpectPing()
 
-	l.Cache = &iredis{Client: db}
+	l.Cache = &IRedisImpl{Client: db}
 
 	l.ListenerConn = MockListenerImpl{
 		MockClose:    func() error { return nil },
@@ -178,7 +117,7 @@ func TestWaitForNotificationBadJsonCase(t *testing.T) {
 
 	db, _ := redismock.NewClientMock()
 
-	l.Cache = &iredis{Client: db}
+	l.Cache = &IRedisImpl{Client: db}
 
 	l.ListenerConn = MockListenerImpl{
 		MockListen: func(channel string) error {
@@ -213,7 +152,7 @@ func TestWaitForNotificationGoodJsonCase(t *testing.T) {
 		notifChan <- &pq.Notification{Extra: "{\"id\":\"1\",\"created_date\":\"abc\"}", Channel: "row_inserted", BePid: 1}
 	}()
 
-	l.Cache = &iredis{Client: MockiredisImpl{
+	l.Cache = &IRedisImpl{Client: MockIRedisImpl{
 		MockPing: func(ctx context.Context) *redis.StatusCmd {
 			return &redis.StatusCmd{}
 		},
