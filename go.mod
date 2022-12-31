@@ -10,6 +10,7 @@ require (
 
 require (
 	github.com/alicebob/gopher-json v0.0.0-20200520072559-a9ecdc9d1d3a // indirect
+	github.com/go-redis/redismock/v8 v8.0.6 // indirect
 	github.com/gomodule/redigo v1.8.9 // indirect
 	github.com/yuin/gopher-lua v0.0.0-20221210110428-332342483e3f // indirect
 )

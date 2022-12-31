@@ -7,9 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"listener_cache_writethrough/src/config"
@@ -21,19 +18,23 @@ import (
 const ttl = time.Duration(600 * time.Second) // 10 minutes
 
 type Listener interface {
-	InitializeCache(config.Config)
-	InitializeListener(cfg config.Config)
-	Start()
-	GetCache() *redis.Client
-	CloseDB()
+	InitializeCache(config.Config) error
+	InitializeListener(config.Config)
+	Start(time.Duration) error
+	GetCache() IRedis
+	CloseDB() error
+	CloseChan()
+	sendErr(err error)
 
-	waitForNotification(*pq.Listener)
+	waitForNotification(IListener, time.Duration)
 }
 
 type ListenerImpl struct {
 	ctx          context.Context
-	Cache        *redis.Client
-	ListenerConn *pq.Listener
+	Cache        IRedis
+	ListenerConn IListener
+
+	errChan chan error
 }
 
 type Record struct {
@@ -43,63 +44,20 @@ type Record struct {
 
 func New(cfg config.Config, ctx context.Context) Listener {
 
-	lstnr := &ListenerImpl{ctx: ctx}
-	lstnr.InitializeCache(cfg)
+	lstnr := &ListenerImpl{
+		ctx:     ctx,
+		errChan: make(chan error),
+	}
+	err := lstnr.InitializeCache(cfg)
+	if err != nil {
+		panic(err)
+	}
 	lstnr.InitializeListener(cfg)
 
 	return lstnr
 }
 
-func (listener *ListenerImpl) waitForNotification(l *pq.Listener) {
-	sigchan := make(chan os.Signal, 1)
-	signal.Notify(sigchan, syscall.SIGINT, syscall.SIGTERM)
-
-	doneCh := make(chan struct{})
-
-	go func() {
-		for {
-			select {
-			case n := <-l.Notify:
-
-				// for shutdown
-				if n == nil {
-					return
-				}
-
-				var prettyJSON bytes.Buffer
-				err := json.Indent(&prettyJSON, []byte(n.Extra), "", "\t")
-				if err != nil {
-					fmt.Println("Error processing JSON: ", err)
-					return
-				}
-
-				var record Record
-				json.Unmarshal([]byte(string(n.Extra)), &record)
-
-				listener.Cache.Set(listener.ctx, record.Id, record.CreatedDate, ttl).Result()
-
-				fmt.Printf("\nLoading into cache\n\n%s", prettyJSON.String())
-
-				return
-			case <-time.After(90 * time.Second):
-				fmt.Println("Received no events for 90 seconds, checking connection")
-				go func() {
-					l.Ping()
-				}()
-				return
-
-			case <-sigchan:
-				fmt.Println("Interrupt is detected")
-				doneCh <- struct{}{}
-			}
-		}
-	}()
-
-	<-doneCh
-	listener.CloseDB()
-}
-
-func (l *ListenerImpl) InitializeCache(cfg config.Config) {
+func (l *ListenerImpl) InitializeCache(cfg config.Config) error {
 
 	connstr := cfg.GetCacheConnDetails()
 
@@ -109,15 +67,16 @@ func (l *ListenerImpl) InitializeCache(cfg config.Config) {
 		DB:       0,
 	})
 
-	ping, _ := rdb.Ping(l.ctx).Result()
+	_, err := rdb.Ping(l.ctx).Result()
 
-	if ping != "PONG" {
-		panic(ping)
+	if err != nil {
+		return fmt.Errorf("we wanted to PONG, but instead we %s'd", err.Error())
 	}
 
 	fmt.Println("connected to cache")
 
-	l.Cache = rdb
+	l.Cache = NewRedisRepository(rdb)
+	return nil
 }
 
 func (l *ListenerImpl) InitializeListener(cfg config.Config) {
@@ -139,29 +98,64 @@ func (l *ListenerImpl) InitializeListener(cfg config.Config) {
 	l.ListenerConn = pq.NewListener(dns, 10*time.Second, time.Minute, reportProblem)
 }
 
-func (l *ListenerImpl) Start() {
+func (l *ListenerImpl) Start(wait time.Duration) error {
 	err := l.ListenerConn.Listen("row_inserted")
 	if err != nil {
-		panic(err)
+		fmt.Println("ListenerConn.Listen failed")
+		return err
 	}
 
 	fmt.Println("Start monitoring PostgreSQL...")
 
 	for {
-		l.waitForNotification(l.ListenerConn)
+		l.waitForNotification(l.ListenerConn, wait)
+	}
+
+}
+
+func (listener *ListenerImpl) sendErr(err error) {
+	listener.errChan <- err
+}
+
+func (listener *ListenerImpl) waitForNotification(l IListener, wait time.Duration) {
+	select {
+	case n := <-l.NotificationChannel():
+		fmt.Println("received:", n.Extra)
+		var prettyJSON bytes.Buffer
+		err := json.Indent(&prettyJSON, []byte(n.Extra), "", "\t")
+
+		if err != nil {
+			go listener.sendErr(fmt.Errorf("error processing JSON: %s", err.Error()))
+		}
+
+		var record Record
+		json.Unmarshal([]byte(string(n.Extra)), &record)
+
+		listener.Cache.Set(listener.ctx, record.Id, record.CreatedDate, ttl).Result()
+		fmt.Printf("\nLoading into cache\n\n%s", prettyJSON.String())
+
+	case <-time.After(wait * time.Second):
+		go l.Ping()
+		fmt.Println("Received no events for 90 seconds, checking connection")
 	}
 }
 
-func (l *ListenerImpl) GetCache() *redis.Client {
+func (l *ListenerImpl) GetCache() IRedis {
 	return l.Cache
 }
 
-func (l *ListenerImpl) CloseDB() {
+func (l *ListenerImpl) CloseDB() error {
+
 	if err := l.ListenerConn.Close(); err != nil {
-		log.Fatalf("failed to close DB: %s", err.Error())
-	} else {
-		l.ListenerConn.Unlisten("row_inserted")
-		log.Println("db connection closed")
-		os.Exit(0)
+		return fmt.Errorf("failed to close DB: %s", err.Error())
 	}
+
+	l.ListenerConn.Unlisten("row_inserted")
+	log.Println("\ndb connection closed")
+	return nil
+
+}
+
+func (l *ListenerImpl) CloseChan() {
+	close(l.errChan)
 }

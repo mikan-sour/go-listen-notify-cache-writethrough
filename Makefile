@@ -12,8 +12,6 @@ build:
 	@go build -o ${BINARY_NAME} src/main.go
 
 run:
-	@make up
-	sleep 20
 	@make build
 	./${BINARY_NAME}
 
@@ -31,5 +29,5 @@ test:
 	sleep 3
 	@go tool cover -html=coverage.out 
 	@make down
-	rm coverage.out listener
+	rm coverage.out ${BINARY_NAME}
 
